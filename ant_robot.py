@@ -22,9 +22,12 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+np.random.seed(0)
+random.seed(0)
+
 
 class Grid:
-    def __init__(self, size, objects, num_agents, k_plus, k_minus):
+    def __init__(self, size, objects, num_agents, k_plus, k_minus, gamma):
         self.size = size
         self.ant_grid = -np.ones((size, size))
         self.object_grid = np.zeros((size, size))
@@ -33,7 +36,7 @@ class Grid:
         self.ant_empty_idx = -1
         self.object_empty_idx = 0
         self.ant_dict = {}
-        self._populate(k_plus, k_minus)
+        self._populate(k_plus, k_minus, gamma)
 
     def _population_helper(self, grid, open_idx):
         open_x, open_y = np.where(grid == open_idx)
@@ -42,11 +45,11 @@ class Grid:
         y_loc = open_y[location_index]
         return x_loc, y_loc
 
-    def _populate(self, k_plus, k_minus):
+    def _populate(self, k_plus, k_minus, gamma):
         # Agents
         for idx in range(self.num_agents):
             x_loc, y_loc = self._population_helper(self.ant_grid, self.ant_empty_idx)
-            new_ant = Ant(x_loc, y_loc, idx, k_plus, k_minus)
+            new_ant = Ant(x_loc, y_loc, idx, gamma, k_plus, k_minus)
             self.ant_dict[idx] = new_ant
             self.ant_grid[x_loc, y_loc] = idx
         # Objects
@@ -74,9 +77,6 @@ class Grid:
             ant.y = new_y
 
     def f_moore(self, obj_id, x, y):
-        """
-        Returns the indices of (up to) 8 neighbors (Moore neighborhood).
-        """
         num_neighbors = 8
         x_options = [x - 1, x, x + 1]
         y_options = [y - 1, y, y + 1]
@@ -92,6 +92,25 @@ class Grid:
                         obj_count += 1
         return obj_count / num_neighbors
 
+    def f_von_neumann(self, obj_id, x, y):
+        num_neighbors = 4
+        options = [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]
+        obj_count = 0
+        for opt in options:
+            i, j = opt
+            i = i % self.size
+            j = j % self.size
+            # if there is an object at this location
+            if self.object_grid[i, j] == obj_id:
+                obj_count += 1
+        return obj_count / num_neighbors
+
+    def f(self, num_neighbors, obj_id, x, y):
+        if num_neighbors == 8:
+            return self.f_moore(obj_id, x, y)
+        if num_neighbors == 4:
+            return self.f_von_neumann(obj_id, x, y)
+
     def run(self, iterations):
         for it in range(iterations):
             ant_idxs = list(self.ant_dict.keys())
@@ -104,13 +123,13 @@ class Grid:
                 current_object = ant.object
                 if current_object is not None:
                     if obj == self.object_empty_idx:
-                        f = self.f_moore(current_object, x_loc, y_loc)
+                        f = self.f(ant.gamma, current_object, x_loc, y_loc)
                         if ant.should_put_down(f):
                             self.object_grid[x_loc, y_loc] = current_object
                             ant.object = None
                 else:
                     if obj != self.object_empty_idx:
-                        f = self.f_moore(obj, x_loc, y_loc)
+                        f = self.f(ant.gamma, obj, x_loc, y_loc)
                         if ant.should_pick_up(f):
                             self.object_grid[x_loc, y_loc] = self.object_empty_idx
                             ant.object = obj
@@ -120,10 +139,11 @@ class Grid:
 
 
 class Ant:
-    def __init__(self, x, y, idx, k_plus, k_minus):
+    def __init__(self, x, y, idx, gamma,  k_plus, k_minus):
         self.x = x
         self.y = y
         self.idx = idx
+        self.gamma = gamma
         self.k_plus = k_plus
         self.k_minus = k_minus
         self.object = None
@@ -135,23 +155,6 @@ class Ant:
     def should_put_down(self, f):
         prob = f / (self.k_minus + f) ** 2
         return random.random() < prob
-
-
-def run_simulation(gridsize, objects_dict, num_agents, iterations, k_plus, k_minus):
-    cmaplist = [(0.9, 0.9, 0.9, 1.0), (0.2, 0.2, 0.7, 1.0), (0.8, 0.2, 0.2, 1.0)]
-    cmap = mpl.colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 3)
-    grid = Grid(gridsize, objects_dict, num_agents, k_plus, k_minus)
-    grid.run(iterations)
-
-    object_ids = grid.objects.keys()
-    clusters = clustering(grid.object_grid, object_ids)
-    print_clusters = {k: (v[0], round(v[1], 2)) for k, v in clusters.items()}
-    plt.matshow(grid.object_grid, cmap=cmap)
-    plt.title(f'Iteration {iterations}, {print_clusters} clusters')
-    plt.axis('off')
-    plt.show()
-    # plt.savefig(f'final_{trial}.png')
-    return grid.object_grid, clusters
 
 
 def moore_neighbors(object_grid, obj_id, loc):
@@ -190,7 +193,6 @@ def dfs(object_grid, obj_id, start_x, start_y):
 
 
 def cluster_metric(object_grid, obj_id):
-    # do this for each object type
     size = len(object_grid)
     cluster_grid = np.zeros((size, size))
     cluster_sizes = []
@@ -210,22 +212,40 @@ def cluster_metric(object_grid, obj_id):
 
 def clustering(grid, indices):
     object_clusters = {}
+    avg_sizes = []
     for idx in indices:
         num_clusters, avg_size, clustered_grid = cluster_metric(grid, idx)
+        avg_sizes.append(avg_size)
         plt.matshow(clustered_grid)
         plt.axis('off')
         plt.title(f'Object {idx}')
         plt.show()
         object_clusters[idx] = (num_clusters, avg_size)
-    return object_clusters
+    return np.mean(avg_sizes)
+
+
+def run_simulation(gridsize, objects_dict, num_agents, iterations, k_plus, k_minus, gamma):
+    cmaplist = [(0.9, 0.9, 0.9, 1.0), (0.2, 0.2, 0.7, 1.0), (0.8, 0.2, 0.2, 1.0)]
+    cmap = mpl.colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 3)
+
+    grid = Grid(gridsize, objects_dict, num_agents, k_plus, k_minus, gamma)
+    grid.run(iterations)
+
+    object_ids = grid.objects.keys()
+    avg_cluster_size = clustering(grid.object_grid, object_ids)
+    plt.matshow(grid.object_grid, cmap=cmap)
+    plt.title(f'{iterations} iterations, $F_c: ${round(float(avg_cluster_size), 2)}')
+    plt.axis('off')
+    plt.show()
+    return grid.object_grid, avg_cluster_size
 
 
 if __name__ == '__main__':
-
-    final_grid, clusters = run_simulation(gridsize=15,
-                                          objects_dict={1: 40, 2: 40},
-                                          num_agents=20,
-                                          iterations=int(10e4),
-                                          k_plus=0.1,
-                                          k_minus=0.3)
-    print(clusters)
+    final_grid, fitness = run_simulation(gridsize=15,
+                                         objects_dict={1: 40, 2: 40},
+                                         num_agents=20,
+                                         iterations=int(100),
+                                         k_plus=0.1,
+                                         k_minus=0.1,
+                                         gamma=4)
+    print(fitness)
