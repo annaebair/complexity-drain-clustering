@@ -17,13 +17,12 @@ Possible modifications to work on:
 """
 
 import random
+import csv
+import json
 from collections import deque
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-
-np.random.seed(0)
-random.seed(0)
 
 
 class Grid:
@@ -33,6 +32,7 @@ class Grid:
         self.object_grid = np.zeros((size, size))
         self.objects = objects
         self.num_agents = num_agents
+        self.gamma = gamma
         self.ant_empty_idx = -1
         self.object_empty_idx = 0
         self.ant_dict = {}
@@ -112,6 +112,9 @@ class Grid:
             return self.f_von_neumann(obj_id, x, y)
 
     def run(self, iterations):
+        cluster_sizes = []
+        fitnesses = []
+        times = []
         for it in range(iterations):
             ant_idxs = list(self.ant_dict.keys())
             random.shuffle(ant_idxs)
@@ -134,8 +137,14 @@ class Grid:
                             self.object_grid[x_loc, y_loc] = self.object_empty_idx
                             ant.object = obj
                 self._move(ant)
-            if it % 5000 == 0: print(f'Iteration {it}')
-        return self.object_grid
+            # if it % 50000 == 0: print(f'Iteration {it}')
+            if it % 1000 == 0:
+                avg_cluster_size = clustering(self.object_grid, self.objects.keys(), plotting=False)
+                fitness = avg_cluster_size / (self.num_agents * self.gamma)
+                cluster_sizes.append(avg_cluster_size)
+                fitnesses.append(fitness)
+                times.append(it)
+        return self.object_grid, cluster_sizes, fitnesses, times
 
 
 class Ant:
@@ -210,42 +219,75 @@ def cluster_metric(object_grid, obj_id):
     return next_index - 1, np.mean(cluster_sizes), cluster_grid
 
 
-def clustering(grid, indices):
+def clustering(grid, indices, plotting):
     object_clusters = {}
     avg_sizes = []
     for idx in indices:
         num_clusters, avg_size, clustered_grid = cluster_metric(grid, idx)
         avg_sizes.append(avg_size)
-        plt.matshow(clustered_grid)
-        plt.axis('off')
-        plt.title(f'Object {idx}')
-        plt.show()
+        if plotting:
+            plt.matshow(clustered_grid)
+            plt.axis('off')
+            plt.title(f'Object {idx}')
+            plt.show()
         object_clusters[idx] = (num_clusters, avg_size)
     return np.mean(avg_sizes)
 
 
-def run_simulation(gridsize, objects_dict, num_agents, iterations, k_plus, k_minus, gamma):
+def run_simulation(gridsize, objects_dict, num_agents, iterations, k_plus, k_minus, gamma, plotting):
     cmaplist = [(0.9, 0.9, 0.9, 1.0), (0.2, 0.2, 0.7, 1.0), (0.8, 0.2, 0.2, 1.0)]
     cmap = mpl.colors.LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 3)
 
     grid = Grid(gridsize, objects_dict, num_agents, k_plus, k_minus, gamma)
-    grid.run(iterations)
+    # Returns a list of fitnesses sampled every 1000 timesteps
+    obj_grid, cluster_sizes, fitnesses, times = grid.run(iterations)
 
+    # Get final clusters and fitness
     object_ids = grid.objects.keys()
-    avg_cluster_size = clustering(grid.object_grid, object_ids)
-    plt.matshow(grid.object_grid, cmap=cmap)
-    plt.title(f'{iterations} iterations, $F_c: ${round(float(avg_cluster_size), 2)}')
-    plt.axis('off')
-    plt.show()
-    return grid.object_grid, avg_cluster_size
+    avg_cluster_size = clustering(grid.object_grid, object_ids, plotting)
+    fitness = avg_cluster_size / (num_agents * gamma)
+    if plotting:
+        plt.matshow(grid.object_grid, cmap=cmap)
+        plt.title(f'{iterations} iters, fitness: {round(float(fitness), 2)}, avg cluster: {round(float(avg_cluster_size), 2)}')
+        plt.axis('off')
+        plt.show()
+    return round(float(fitness), 2), round(float(avg_cluster_size), 2)
+
+
+def single_run(seed, gridsize, objects_dict, num_agents, iterations, k_plus, k_minus, gamma):
+    assert (sum(objects_dict.values()) < gridsize ** 2)
+    np.random.seed(seed)
+    random.seed(seed)
+    fit, size = run_simulation(gridsize=gridsize,
+                               objects_dict=objects_dict,
+                               num_agents=num_agents,
+                               iterations=int(iterations),
+                               k_plus=k_plus,
+                               k_minus=k_minus,
+                               gamma=gamma,
+                               plotting=False)
+    lst = [seed, gridsize, num_agents, iterations, k_plus, k_minus, gamma, fit, size, json.dumps(objects_dict)]
+    return lst
 
 
 if __name__ == '__main__':
-    final_grid, fitness = run_simulation(gridsize=15,
-                                         objects_dict={1: 40, 2: 40},
-                                         num_agents=20,
-                                         iterations=int(100),
-                                         k_plus=0.1,
-                                         k_minus=0.1,
-                                         gamma=4)
-    print(fitness)
+
+    with open('10mil_3_27_results.csv', 'w+') as f:
+        w = csv.writer(f, delimiter='|')
+        for s in [0, 1, 2, 3]:
+            for g in [4, 8]:
+                for a in [2, 4, 8]:
+                    k_lst = [(0.0001, 0.0001), (0.0005, 0.0005), (0.04, 0.04), (0.045, 0.045)]
+                    for k_pair in k_lst:
+                        lst = single_run(seed=s,
+                                         gridsize=40,
+                                         objects_dict={1: 200},
+                                         num_agents=a,
+                                         iterations=10000000,
+                                         k_plus=k_pair[0],
+                                         k_minus=k_pair[1],
+                                         gamma=g)
+                        w.writerow("")
+                        w.writerow(lst)
+                        print(f'{a} agents', s, k_pair, g)
+
